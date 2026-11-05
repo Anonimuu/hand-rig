@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d10">
+<title>Hand Rig</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --fg: #e8ecf1;
+    --muted: #8a94a3;
+    --accent: #3df5c1;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  video { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 16px; padding: 24px; text-align: center; background: var(--bg); z-index: 2; }
+  .overlay[hidden] { display: none; }
+  .overlay h1 { margin: 0; font-size: 28px; letter-spacing: .02em; }
+  .overlay p { margin: 0; max-width: 32ch; color: var(--muted); }
+  button { font: inherit; color: var(--bg); background: var(--accent); border: 0; border-radius: 999px;
+    padding: 14px 28px; font-weight: 600; cursor: pointer; }
+  button:focus-visible { outline: 3px solid var(--fg); outline-offset: 3px; }
+  #error { color: #ff7b7b; max-width: 36ch; min-height: 1.4em; }
+
+  .hud { position: fixed; left: 0; right: 0; z-index: 1; display: flex; justify-content: space-between;
+    align-items: center; padding: 12px; pointer-events: none; }
+  .hud.top { top: env(safe-area-inset-top, 0px); }
+  .chip { pointer-events: auto; background: rgba(11,13,16,.6); color: var(--fg); border: 1px solid rgba(255,255,255,.18);
+    border-radius: 999px; padding: 8px 14px; font-size: 13px; font-weight: 500; backdrop-filter: blur(6px); }
+  #status { pointer-events: none; font-variant-numeric: tabular-nums; }
+  #flip { cursor: pointer; }
+</style>
+</head>
+<body>
+
+<video id="video" playsinline muted autoplay></video>
+<canvas id="view"></canvas>
+
+<div class="hud top" id="hud" hidden>
+  <span class="chip" id="status">Procurando mãos…</span>
+  <button class="chip" id="flip" type="button">Virar câmera</button>
+</div>
+
+<div class="overlay" id="start">
+  <h1>Hand Rig</h1>
+  <p>A câmera vai rastrear suas mãos e desenhar o esqueleto sobre elas. O vídeo não sai do aparelho.</p>
+  <button id="go" type="button">Ativar câmera</button>
+  <div id="error" role="alert"></div>
+</div>
+
+<script type="module">
+import { FilesetResolver, HandLandmarker }
+  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/vision_bundle.mjs";
+
+const WASM_URL  = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm";
+const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+
+/* ------------------------------------------------------------------ *
+ * Camada 1: câmera
+ * ------------------------------------------------------------------ */
+class Camera {
+  constructor(video) { this.video = video; this.stream = null; this.facing = "user"; }
+  async start(facing = this.facing) {
+    this.stop();
+    this.facing = facing;
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } }
+    });
+    this.video.srcObject = this.stream;
+    await this.video.play();
+  }
+  stop() {
+    if (this.stream) this.stream.getTracks().forEach(t => t.stop());
+    this.stream = null;
+  }
+  get mirrored() { return this.facing === "user"; }
+}
+
+/* ------------------------------------------------------------------ *
+ * Camada 2: detecção das mãos (reutilizável por futuras funções)
+ * Emite 21 pontos normalizados (x, y, z) por mão.
+ * ------------------------------------------------------------------ */
+class HandTracker {
+  constructor() { this.landmarker = null; this.lastTime = -1; }
+  async init() {
+    const fileset = await FilesetResolver.forVisionTasks(WASM_URL);
+    const make = delegate => HandLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: MODEL_URL, delegate },
+      runningMode: "VIDEO",
+      numHands: 2,
+      minHandDetectionConfidence: 0.5,
+      minHandPresenceConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+    try { this.landmarker = await make("GPU"); }
+    catch { this.landmarker = await make("CPU"); }
+  }
+  detect(video) {
+    if (!this.landmarker || video.readyState < 2 || video.currentTime === this.lastTime) return null;
+    this.lastTime = video.currentTime;
+    const r = this.landmarker.detectForVideo(video, performance.now());
+    return r.landmarks || [];
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Camada 3: o rig (esqueleto) desenhado sobre a mão
+ * ------------------------------------------------------------------ */
+const FINGERS = [
+  { name: "polegar",  color: "#ff8a5b", chain: [0, 1, 2, 3, 4] },
+  { name: "indicador",color: "#ffd25b", chain: [0, 5, 6, 7, 8] },
+  { name: "médio",    color: "#7dff8a", chain: [0, 9, 10, 11, 12] },
+  { name: "anelar",   color: "#5bd6ff", chain: [0, 13, 14, 15, 16] },
+  { name: "mindinho", color: "#c58bff", chain: [0, 17, 18, 19, 20] }
+];
+const PALM = [[5, 9], [9, 13], [13, 17]];
+const TIPS = new Set([4, 8, 12, 16, 20]);
+
+function drawRig(ctx, hand, toPx, scale) {
+  const P = hand.map(toPx);
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  // palma
+  ctx.strokeStyle = "rgba(255,255,255,.55)";
+  ctx.lineWidth = Math.max(2, 3 * scale);
+  for (const [a, b] of PALM) {
+    ctx.beginPath(); ctx.moveTo(P[a].x, P[a].y); ctx.lineTo(P[b].x, P[b].y); ctx.stroke();
+  }
+
+  // ossos de cada dedo
+  for (const f of FINGERS) {
+    ctx.strokeStyle = f.color;
+    ctx.lineWidth = Math.max(3, 5 * scale);
+    ctx.beginPath();
+    f.chain.forEach((i, k) => k ? ctx.lineTo(P[i].x, P[i].y) : ctx.moveTo(P[i].x, P[i].y));
+    ctx.stroke();
+  }
+
+  // articulações
+  for (let i = 0; i < P.length; i++) {
+    const color = i === 0 ? "#ffffff" : FINGERS.find(f => f.chain.includes(i)).color;
+    const r = (TIPS.has(i) ? 7 : i === 0 ? 8 : 5) * scale;
+    ctx.fillStyle = "#0b0d10";
+    ctx.beginPath(); ctx.arc(P[i].x, P[i].y, r + 2 * scale, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(P[i].x, P[i].y, r, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * App
+ * ------------------------------------------------------------------ */
+const $ = id => document.getElementById(id);
+const video = $("video"), canvas = $("view"), ctx = canvas.getContext("2d");
+const startEl = $("start"), hud = $("hud"), statusEl = $("status"), errorEl = $("error");
+
+const camera = new Camera(video);
+const tracker = new HandTracker();
+let hands = [];
+let running = false;
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(innerWidth * dpr);
+  canvas.height = Math.round(innerHeight * dpr);
+}
+addEventListener("resize", resize);
+resize();
+
+function frame() {
+  if (!running) return;
+  requestAnimationFrame(frame);
+
+  const found = tracker.detect(video);
+  if (found) {
+    hands = found;
+    statusEl.textContent = hands.length ? `${hands.length} ${hands.length === 1 ? "mão" : "mãos"}` : "Procurando mãos…";
+  }
+
+  const cw = canvas.width, ch = canvas.height;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return;
+
+  // "cover": o vídeo preenche a tela sem distorcer
+  const s = Math.max(cw / vw, ch / vh);
+  const ox = (cw - vw * s) / 2, oy = (ch - vh * s) / 2;
+
+  ctx.save();
+  ctx.fillStyle = "#0b0d10";
+  ctx.fillRect(0, 0, cw, ch);
+  if (camera.mirrored) { ctx.translate(cw, 0); ctx.scale(-1, 1); }
+  ctx.drawImage(video, ox, oy, vw * s, vh * s);
+
+  const unit = (window.devicePixelRatio || 1) * Math.min(innerWidth, innerHeight) / 420;
+  const toPx = p => ({ x: ox + p.x * vw * s, y: oy + p.y * vh * s });
+  for (const hand of hands) drawRig(ctx, hand, toPx, unit);
+  ctx.restore();
+}
+
+async function begin(facing) {
+  errorEl.textContent = "";
+  $("go").disabled = true;
+  $("go").textContent = "Carregando…";
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("Este navegador não permite acesso à câmera. Abra a página por HTTPS.");
+    }
+    await camera.start(facing);
+    if (!tracker.landmarker) await tracker.init();
+    startEl.hidden = true;
+    hud.hidden = false;
+    running = true;
+    frame();
+  } catch (e) {
+    const denied = e && (e.name === "NotAllowedError" || e.name === "SecurityError");
+    errorEl.textContent = denied
+      ? "Permissão da câmera negada. Libere o acesso nas configurações do navegador e tente de novo."
+      : (e && e.message) || "Não foi possível iniciar.";
+    $("go").disabled = false;
+    $("go").textContent = "Tentar de novo";
+  }
+}
+
+$("go").addEventListener("click", () => begin("user"));
+$("flip").addEventListener("click", async () => {
+  hands = [];
+  try { await camera.start(camera.facing === "user" ? "environment" : "user"); }
+  catch { await camera.start("user").catch(() => {}); }
+});
+</script>
+</body>
+</html>
