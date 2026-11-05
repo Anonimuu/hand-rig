@@ -4,33 +4,37 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b0d10">
-<title>Hand Rig</title>
+<title>Sala Virtual</title>
 <style>
   :root { --bg: #0b0d10; --fg: #e8ecf1; --muted: #8a94a3; --accent: #3df5c1; }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
     font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
-  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-  video { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  video { position: fixed; left: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); width: 132px;
+    border-radius: 12px; border: 1px solid rgba(255,255,255,.18); z-index: 1; opacity: 0; pointer-events: none; transition: opacity .2s; }
+  video.on { opacity: .9; }
+  video.mirror { transform: scaleX(-1); }
 
-  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 16px; padding: 24px; text-align: center; background: var(--bg); z-index: 2; }
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; padding: 24px; text-align: center; background: rgba(11,13,16,.84); backdrop-filter: blur(6px); z-index: 2; }
   .overlay[hidden] { display: none; }
   .overlay h1 { margin: 0; font-size: 28px; letter-spacing: .02em; }
-  .overlay p { margin: 0; max-width: 36ch; color: var(--muted); }
+  .overlay p { margin: 0; max-width: 44ch; color: var(--muted); }
   button { font: inherit; color: var(--bg); background: var(--accent); border: 0; border-radius: 999px;
     padding: 14px 28px; font-weight: 600; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--fg); border: 1px solid rgba(255,255,255,.3); }
   button:focus-visible { outline: 3px solid var(--fg); outline-offset: 3px; }
   #error { color: #ff7b7b; max-width: 36ch; min-height: 1.4em; }
 
   .hud { position: fixed; left: 0; right: 0; z-index: 1; display: flex; justify-content: space-between;
-    align-items: center; gap: 8px; padding: 12px; pointer-events: none; }
+    align-items: center; gap: 8px; padding: 12px; pointer-events: none; flex-wrap: wrap; }
   .hud.top { top: env(safe-area-inset-top, 0px); }
-  .hud .right { display: flex; gap: 8px; }
+  .hud .group { display: flex; gap: 8px; flex-wrap: wrap; }
   .chip { pointer-events: auto; background: rgba(11,13,16,.6); color: var(--fg); border: 1px solid rgba(255,255,255,.18);
-    border-radius: 999px; padding: 8px 14px; font-size: 13px; font-weight: 500; backdrop-filter: blur(6px); }
-  #status { pointer-events: none; font-variant-numeric: tabular-nums; }
-  #flip, #tab { cursor: pointer; }
+    border-radius: 999px; padding: 8px 14px; font-size: 13px; font-weight: 500; backdrop-filter: blur(6px); cursor: default; }
+  button.chip { cursor: pointer; }
+  #status, #score { pointer-events: none; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -39,18 +43,24 @@
 <canvas id="view"></canvas>
 
 <div class="hud top" id="hud" hidden>
-  <span class="chip" id="status">Procurando mãos…</span>
-  <div class="right">
-    <button class="chip" id="tab" type="button">🎤 diga “tabuleiro”</button>
+  <div class="group">
+    <span class="chip" id="status">Procurando mãos…</span>
+    <span class="chip" id="score">Alvo: 0</span>
+  </div>
+  <div class="group">
+    <button class="chip" id="pip" type="button">Ver câmera</button>
     <button class="chip" id="flip" type="button">Virar câmera</button>
+    <button class="chip" id="reset" type="button">Reiniciar</button>
   </div>
 </div>
 
 <div class="overlay" id="start">
-  <h1>Hand Rig</h1>
-  <p>A câmera rastreia suas mãos e desenha o esqueleto sobre elas. Diga “tabuleiro” para invocar o tabuleiro de RPG; “fechar” para guardá-lo. O vídeo não sai do aparelho.</p>
-  <p>Pinça (polegar + indicador) numa miniatura: pega, move e gira o pulso para virá-la; ao soltar ela se fixa na casa. Pinça no tabuleiro: arrasta. Pinça com as duas mãos: gira e muda o tamanho.</p>
-  <button id="go" type="button">Ativar câmera e microfone</button>
+  <h1>Sala virtual</h1>
+  <p>Uma sala 3D que você controla com as mãos pela câmera. Pinça (polegar + indicador) perto de um objeto: pega e move. Solte em movimento para arremessar. Aproximar ou afastar a mão move o objeto em profundidade.</p>
+  <p>Toque no botão vermelho para apagar a lâmpada e acerte o alvo na parede. O vídeo não sai do aparelho.</p>
+  <button id="go" type="button">Ativar câmera</button>
+  <button id="nocam" class="ghost" type="button">Testar só com mouse ou toque</button>
+  <p>Mouse: clique e arraste um objeto; role a roda para mudar a profundidade.</p>
   <div id="error" role="alert"></div>
 </div>
 
@@ -62,9 +72,7 @@ import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.m
 const WASM_URL  = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm";
 const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
 
-/* ------------------------------------------------------------------ *
- * Camada 1: câmera
- * ------------------------------------------------------------------ */
+/* ---- Camada 1: câmera ---- */
 class Camera {
   constructor(video) { this.video = video; this.stream = null; this.facing = "user"; }
   async start(facing = this.facing) {
@@ -75,33 +83,24 @@ class Camera {
       video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } }
     });
     this.video.srcObject = this.stream;
+    this.video.classList.toggle("mirror", this.mirrored);
     await this.video.play();
   }
-  stop() {
-    if (this.stream) this.stream.getTracks().forEach(t => t.stop());
-    this.stream = null;
-  }
+  stop() { if (this.stream) this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
   get mirrored() { return this.facing === "user"; }
 }
 
-/* ------------------------------------------------------------------ *
- * Camada 2: detecção das mãos
- * Devolve [{ key, lm }]: 21 pontos normalizados por mão.
- * ------------------------------------------------------------------ */
+/* ---- Camada 2: detecção das mãos (21 pontos normalizados por mão) ---- */
 class HandTracker {
   constructor() { this.landmarker = null; this.lastTime = -1; }
   async init() {
     const fileset = await FilesetResolver.forVisionTasks(WASM_URL);
     const make = delegate => HandLandmarker.createFromOptions(fileset, {
       baseOptions: { modelAssetPath: MODEL_URL, delegate },
-      runningMode: "VIDEO",
-      numHands: 2,
-      minHandDetectionConfidence: 0.5,
-      minHandPresenceConfidence: 0.5,
-      minTrackingConfidence: 0.5
+      runningMode: "VIDEO", numHands: 2,
+      minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5
     });
-    try { this.landmarker = await make("GPU"); }
-    catch { this.landmarker = await make("CPU"); }
+    try { this.landmarker = await make("GPU"); } catch { this.landmarker = await make("CPU"); }
   }
   detect(video) {
     if (!this.landmarker || video.readyState < 2 || video.currentTime === this.lastTime) return null;
@@ -117,374 +116,330 @@ class HandTracker {
   }
 }
 
-/* ------------------------------------------------------------------ *
- * Camada 3: o rig (esqueleto) desenhado sobre a mão
- * ------------------------------------------------------------------ */
-const FINGERS = [
-  { name: "polegar",  color: "#ff8a5b", chain: [0, 1, 2, 3, 4] },
-  { name: "indicador",color: "#ffd25b", chain: [0, 5, 6, 7, 8] },
-  { name: "médio",    color: "#7dff8a", chain: [0, 9, 10, 11, 12] },
-  { name: "anelar",   color: "#5bd6ff", chain: [0, 13, 14, 15, 16] },
-  { name: "mindinho", color: "#c58bff", chain: [0, 17, 18, 19, 20] }
-];
-const PALM = [[5, 9], [9, 13], [13, 17]];
-const TIPS = new Set([4, 8, 12, 16, 20]);
-
-function drawRig(ctx, hand, toPx, scale) {
-  const P = hand.map(toPx);
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-
-  ctx.strokeStyle = "rgba(255,255,255,.55)";
-  ctx.lineWidth = Math.max(2, 3 * scale);
-  for (const [a, b] of PALM) {
-    ctx.beginPath(); ctx.moveTo(P[a].x, P[a].y); ctx.lineTo(P[b].x, P[b].y); ctx.stroke();
-  }
-
-  for (const f of FINGERS) {
-    ctx.strokeStyle = f.color;
-    ctx.lineWidth = Math.max(3, 5 * scale);
-    ctx.beginPath();
-    f.chain.forEach((i, k) => k ? ctx.lineTo(P[i].x, P[i].y) : ctx.moveTo(P[i].x, P[i].y));
-    ctx.stroke();
-  }
-
-  for (let i = 0; i < P.length; i++) {
-    const color = i === 0 ? "#ffffff" : FINGERS.find(f => f.chain.includes(i)).color;
-    const r = (TIPS.has(i) ? 7 : i === 0 ? 8 : 5) * scale;
-    ctx.fillStyle = "#0b0d10";
-    ctx.beginPath(); ctx.arc(P[i].x, P[i].y, r + 2 * scale, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = color;
-    ctx.beginPath(); ctx.arc(P[i].x, P[i].y, r, 0, Math.PI * 2); ctx.fill();
-  }
-}
-
-/* ------------------------------------------------------------------ *
- * Camada 4: tabuleiro 3D de RPG (three.js, renderizado fora da tela
- * e composto no canvas principal, entre o vídeo e o rig)
- * Hierarquia: pivot (posição/escala) > tilt (inclinação) > spin (giro) > peças
- * Unidades locais do tabuleiro: 1 casa = 1; tabuleiro 8x8 (-4..4).
- * ------------------------------------------------------------------ */
-const VH = 10, FOV = 40, TOP = 0.15;
-const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
-const scene = new THREE.Scene();
-const cam = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100);
-cam.position.z = (VH / 2) / Math.tan(FOV / 2 * Math.PI / 180);
-scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.5));
-const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(3, 6, 8); scene.add(sun);
-
-const pivot = new THREE.Group(), tilt = new THREE.Group(), spin = new THREE.Group();
-tilt.rotation.x = 1.0;
-pivot.add(tilt); tilt.add(spin); scene.add(pivot);
-pivot.visible = false;
-
-const cache = {};
-const mat = c => cache[c] || (cache[c] = new THREE.MeshStandardMaterial({ color: c, roughness: .55 }));
-function add(parent, geo, color, x = 0, y = 0, z = 0) {
-  const m = new THREE.Mesh(geo, mat(color)); m.position.set(x, y, z); parent.add(m); return m;
-}
-const Cyl = (a, b, h) => new THREE.CylinderGeometry(a, b, h, 20);
-const Sph = r => new THREE.SphereGeometry(r, 16, 12);
-const Cone = (r, h) => new THREE.ConeGeometry(r, h, 18);
-const Box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
-
-add(spin, Box(8.6, .4, 8.6), 0x3b2a1a, 0, -.1, 0);
-for (let i = 0; i < 8; i++) for (let j = 0; j < 8; j++)
-  add(spin, Box(.96, .14, .96), (i + j) % 2 ? 0x7a6a4f : 0xcdb98f, i - 3.5, .08, j - 3.5);
-
-function makeMini(kind) {
-  const g = new THREE.Group(), b = new THREE.Group(); g.add(b);
-  const P = (geo, c, x, y, z) => add(b, geo, c, x, y, z);
-  if (kind === "orc") {
-    b.scale.setScalar(1.35);
-    P(Cyl(.5, .5, .14), 0x5a1010, 0, .07, 0);
-    P(Cyl(.34, .46, 1), 0x4f7f33, 0, .64, 0);
-    P(Sph(.3), 0x5f9a3c, 0, 1.35, 0);
-    for (const s of [-1, 1]) {
-      P(Cone(.07, .3), 0xeeeeee, s * .22, 1.66, 0);
-      P(Cone(.04, .16), 0xffffff, s * .12, 1.15, .24);
-      P(Sph(.05), 0xff2222, s * .1, 1.4, .26);
-    }
-    P(Box(.06, 1.1, .06), 0x5a3a1a, .52, .8, 0);
-    P(Box(.4, .3, .06), 0x999999, .68, 1.2, 0);
-  } else {
-    P(Cyl(.38, .38, .12), 0x222222, 0, .06, 0);
-    if (kind === "knight") {
-      P(Cyl(.2, .26, .7), 0x4a7bd1, 0, .47, 0);
-      P(Sph(.2), 0xe0c9a6, 0, .98, 0);
-      P(Box(.08, .8, .08), 0xcccccc, .32, .75, 0);
-      P(Box(.3, .36, .06), 0xb8a040, -.3, .55, .1);
-    } else if (kind === "archer") {
-      P(Cone(.28, .85), 0x3aa05a, 0, .52, 0);
-      P(Sph(.18), 0xe0c9a6, 0, .98, 0);
-      P(Box(.05, .95, .05), 0x6b4a2a, .32, .62, 0);
-    } else {
-      P(Cone(.3, 1), 0x7a4fd0, 0, .58, 0);
-      P(Sph(.18), 0xe0c9a6, 0, 1.12, 0);
-      P(Cone(.22, .5), 0x3a2470, 0, 1.45, 0);
-      P(Box(.05, 1.25, .05), 0x6b4a2a, .34, .72, 0);
-      P(Sph(.1), 0x66e0ff, .34, 1.4, 0);
-    }
-  }
-  spin.add(g);
-  return g;
-}
-const START = [["knight", -1.5, 2.5], ["archer", .5, 2.5], ["mage", 2.5, 2.5], ["orc", .5, -2.5]];
-const minis = START.map(([k]) => makeMini(k));
-function resetMinis() {
-  minis.forEach((m, i) => { m.position.set(START[i][1], TOP, START[i][2]); m.rotation.y = i === 3 ? 0 : Math.PI; m.userData.held = false; });
-}
-resetMinis();
-
-/* ------------------------------------------------------------------ *
- * App
- * ------------------------------------------------------------------ */
+/* ---- Camada 3: ambiente virtual (three.js) ----
+ * Sala: x -3..3, y 0..3.6, z -7..1.8. Câmera do observador em (0, 1.6, 3.5). */
 const $ = id => document.getElementById(id);
-const video = $("video"), canvas = $("view"), ctx = canvas.getContext("2d");
-const startEl = $("start"), hud = $("hud"), statusEl = $("status"), errorEl = $("error");
-
-const camera = new Camera(video);
-const tracker = new HandTracker();
-let hands = [];
-let running = false;
-
-// estado do tabuleiro e dos gestos
-let shown = false, appear = 1, sc = .5, mode = "", two = null, last = 0;
-const hs = {}, grabs = {};
-let lay = { ox: 0, oy: 0, s: 1, vw: 1, vh: 1 };
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
-const unitPx = () => (window.devicePixelRatio || 1) * Math.min(innerWidth, innerHeight) / 420;
+const W = 3, H = 3.6, ZB = -7, ZF = 1.8;
 
-const toPx = p => {
-  const x = lay.ox + p.x * lay.vw * lay.s;
-  return { x: camera.mirrored ? canvas.width - x : x, y: lay.oy + p.y * lay.vh * lay.s };
-};
-const toWorld = p => ({
-  x: (p.x / canvas.width - .5) * VH * canvas.width / canvas.height,
-  y: -(p.y / canvas.height - .5) * VH
-});
+const canvas = $("view");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0d10);
+const cam = new THREE.PerspectiveCamera(62, 1, .1, 50);
+cam.position.set(0, 1.6, 3.5);
+cam.lookAt(0, 1.4, -2);
 
-const ray = new THREE.Raycaster(), plane = new THREE.Plane(), hit = new THREE.Vector3();
-function boardPoint(p) {
-  ray.setFromCamera(new THREE.Vector2(p.x / canvas.width * 2 - 1, 1 - p.y / canvas.height * 2), cam);
-  const n = new THREE.Vector3(0, 1, 0).transformDirection(spin.matrixWorld);
-  const o = new THREE.Vector3(0, TOP, 0).applyMatrix4(spin.matrixWorld);
-  plane.setFromNormalAndCoplanarPoint(n, o);
-  return ray.ray.intersectPlane(plane, hit) ? spin.worldToLocal(hit.clone()) : null;
+const hemi = new THREE.HemisphereLight(0xcfe0ff, 0x2a2233, .5);
+const lamp = new THREE.PointLight(0xffe2b0, 20, 0, 2);
+lamp.position.set(0, H - .5, -2.5);
+scene.add(hemi, lamp);
+
+// paredes (caixa vista por dentro) e piso com grade
+const walls = new THREE.Mesh(new THREE.BoxGeometry(2 * W, H, ZF - ZB),
+  new THREE.MeshStandardMaterial({ color: 0x232b3d, roughness: .95, side: THREE.BackSide }));
+walls.position.set(0, H / 2, (ZF + ZB) / 2);
+scene.add(walls);
+
+const gc = document.createElement("canvas"); gc.width = gc.height = 64;
+const g2 = gc.getContext("2d");
+g2.fillStyle = "#2d2a38"; g2.fillRect(0, 0, 64, 64);
+g2.strokeStyle = "rgba(61,245,193,.35)"; g2.lineWidth = 2; g2.strokeRect(1, 1, 62, 62);
+const gridTex = new THREE.CanvasTexture(gc);
+gridTex.wrapS = gridTex.wrapT = THREE.RepeatWrapping;
+gridTex.repeat.set(2 * W, ZF - ZB);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(2 * W, ZF - ZB),
+  new THREE.MeshStandardMaterial({ map: gridTex, roughness: .8 }));
+floor.rotation.x = -Math.PI / 2;
+floor.position.set(0, 0, (ZF + ZB) / 2);
+scene.add(floor);
+
+// lâmpada
+const bulbMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffd9a0, emissiveIntensity: 1.5 });
+const bulb = new THREE.Mesh(new THREE.SphereGeometry(.14, 16, 12), bulbMat);
+bulb.position.copy(lamp.position);
+const cord = new THREE.Mesh(new THREE.CylinderGeometry(.012, .012, .5), new THREE.MeshStandardMaterial({ color: 0x111111 }));
+cord.position.set(0, H - .25, -2.5);
+scene.add(bulb, cord);
+let lampOn = true;
+function setLamp(on) {
+  lampOn = on;
+  lamp.intensity = on ? 20 : 0;
+  hemi.intensity = on ? .5 : .16;
+  bulbMat.emissiveIntensity = on ? 1.5 : 0;
 }
+
+// botão vermelho sobre um pedestal
+const BTN = new THREE.Vector3(2.2, 1.02, -2.5);
+const ped = new THREE.Mesh(new THREE.CylinderGeometry(.25, .3, .9, 24), new THREE.MeshStandardMaterial({ color: 0x4a5266 }));
+ped.position.set(BTN.x, .45, BTN.z);
+const btnMat = new THREE.MeshStandardMaterial({ color: 0xff3b3b, emissive: 0xff1111, emissiveIntensity: .6 });
+const btn = new THREE.Mesh(new THREE.CylinderGeometry(.15, .15, .1, 24), btnMat);
+btn.position.set(BTN.x, .95, BTN.z);
+scene.add(ped, btn);
+
+// alvo na parede do fundo
+const targetMat = new THREE.MeshStandardMaterial({ color: 0xffd25b, emissive: 0xffa500, emissiveIntensity: .3 });
+const TARGET = new THREE.Vector3(0, 2.1, ZB + .04);
+const ring = new THREE.Mesh(new THREE.TorusGeometry(.55, .07, 16, 48), targetMat);
+ring.position.copy(TARGET);
+const disc = new THREE.Mesh(new THREE.CircleGeometry(.5, 40), new THREE.MeshStandardMaterial({ color: 0x15181f }));
+disc.position.set(0, 2.1, ZB + .03);
+scene.add(ring, disc);
+
+// objetos para testar
+const SPEC = [
+  { geo: new THREE.BoxGeometry(.52, .52, .52),        color: 0xff6b6b, r: .3,  bounce: .3 },
+  { geo: new THREE.SphereGeometry(.26, 24, 16),       color: 0x3df5c1, r: .26, bounce: .85 },
+  { geo: new THREE.CylinderGeometry(.22, .22, .5, 24), color: 0xffd25b, r: .28, bounce: .4 },
+  { geo: new THREE.ConeGeometry(.3, .6, 24),          color: 0xc58bff, r: .3,  bounce: .4 },
+  { geo: new THREE.SphereGeometry(.4, 24, 16),        color: 0x5bd6ff, r: .4,  bounce: .7 },
+  { geo: new THREE.BoxGeometry(.4, .4, .4),           color: 0xff8a5b, r: .22, bounce: .3 }
+];
+const shadowGeo = new THREE.CircleGeometry(1, 24).rotateX(-Math.PI / 2);
+const objs = SPEC.map(s => {
+  const mesh = new THREE.Mesh(s.geo, new THREE.MeshStandardMaterial({ color: s.color, roughness: .45 }));
+  const shadow = new THREE.Mesh(shadowGeo, new THREE.MeshBasicMaterial({ color: 0, transparent: true, opacity: .5, depthWrite: false }));
+  scene.add(mesh, shadow);
+  return { mesh, shadow, r: s.r, bounce: s.bounce, vel: new THREE.Vector3(), held: null };
+});
+function resetObjs() {
+  objs.forEach((o, i) => {
+    o.mesh.position.set(-2 + i * .8, o.r + (i === 5 ? 1.2 : 0), -1 - (i % 2) * 1.3);
+    o.mesh.rotation.set(0, i, 0);
+    o.vel.set(0, 0, 0);
+    if (o.held) { o.held.grab = null; o.held = null; }
+  });
+  score = 0; setLamp(true);
+}
+
+/* ---- projeção: ponto da tela + distância -> posição na sala ---- */
+function ptAt(nx, ny, d, out = new THREE.Vector3()) {
+  out.set(nx, ny, .5).unproject(cam);
+  return out.sub(cam.position).normalize().multiplyScalar(d).add(cam.position);
+}
+
+/* ---- mãos em 3D ---- */
+const FC = ["#ff8a5b", "#ffd25b", "#7dff8a", "#5bd6ff", "#c58bff"];
+const BONES = [];
+for (let f = 0; f < 5; f++) {
+  const c = [0, 1 + f * 4, 2 + f * 4, 3 + f * 4, 4 + f * 4];
+  for (let k = 0; k < 4; k++) BONES.push([c[k], c[k + 1]]);
+}
+BONES.push([5, 9], [9, 13], [13, 17]);
+const sphGeo = new THREE.SphereGeometry(.03, 10, 8);
+const boneGeo = new THREE.CylinderGeometry(.012, .012, 1, 6).rotateX(Math.PI / 2);
+const boneMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: .6, depthTest: false });
+function makeHand() {
+  const g = new THREE.Group(), pts = [], bones = [];
+  for (let i = 0; i < 21; i++) {
+    const m = new THREE.Mesh(sphGeo, new THREE.MeshBasicMaterial({ color: i ? FC[(i - 1) >> 2] : "#ffffff", depthTest: false }));
+    if (i && i % 4 === 0) m.scale.setScalar(1.5);
+    m.renderOrder = 11; g.add(m); pts.push(m);
+  }
+  for (let k = 0; k < BONES.length; k++) {
+    const m = new THREE.Mesh(boneGeo, boneMat); m.renderOrder = 10; g.add(m); bones.push(m);
+  }
+  scene.add(g);
+  return { g, pts, bones };
+}
+const hands3d = {};
+
+/* ---- ponteiros (mãos ou mouse) e interação ---- */
+const ptrs = new Map();
+const curGeo = new THREE.SphereGeometry(.07, 16, 12);
+function getPtr(key, pos) {
+  let p = ptrs.get(key);
+  if (!p) {
+    const cursor = new THREE.Mesh(curGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: .5, depthTest: false }));
+    cursor.renderOrder = 12; scene.add(cursor);
+    p = { key, pos: pos.clone(), pinch: false, grab: null, off: new THREE.Vector3(), cursor };
+    ptrs.set(key, p);
+  } else p.pos.lerp(pos, .5);
+  return p;
+}
+function dropPtr(p) {
+  if (p.grab) { release(p); }
+  scene.remove(p.cursor); ptrs.delete(p.key);
+}
+function release(p) {
+  const o = p.grab; if (!o) return;
+  if (o.vel.length() > 14) o.vel.setLength(14);
+  o.held = null; p.grab = null;
+}
+function updatePtr(p) {
+  if (p.pinch && !p.grab) {
+    let best = null, bd = 1e9;
+    for (const o of objs) {
+      const d = o.mesh.position.distanceTo(p.pos);
+      if (!o.held && d < o.r + .45 && d < bd) { bd = d; best = o; }
+    }
+    if (best) { best.held = p; p.grab = best; p.off.copy(best.mesh.position).sub(p.pos); }
+  } else if (!p.pinch && p.grab) release(p);
+  p.cursor.material.color.set(p.pinch ? 0x3df5c1 : 0xffffff);
+  p.cursor.material.opacity = p.pinch ? .95 : .5;
+  p.cursor.scale.setScalar(p.pinch ? .7 : 1);
+  p.cursor.position.copy(p.pos);
+  if (now - lastBtn > 700 && p.pos.distanceTo(BTN) < .3) { lastBtn = now; setLamp(!lampOn); }
+}
+
+/* ---- física simples: gravidade, paredes, colisão entre objetos ---- */
+function physics(dt) {
+  const lim = [["x", -W, W], ["y", 0, H], ["z", ZB, ZF]];
+  for (const o of objs) {
+    const p = o.mesh.position, v = o.vel, held = !!o.held;
+    if (held) {
+      const old = p.clone();
+      p.lerp(o.held.pos.clone().add(o.held.off), 1 - Math.exp(-25 * dt));
+      v.lerp(p.clone().sub(old).divideScalar(dt), .35);
+    } else {
+      v.y -= 9 * dt; v.multiplyScalar(1 - .15 * dt);
+      p.addScaledVector(v, dt);
+    }
+    for (const [a, lo, hi] of lim) {
+      const L = lo + o.r, Hh = hi - o.r;
+      if (p[a] < L) { p[a] = L; if (!held && v[a] < 0) v[a] *= -o.bounce; }
+      else if (p[a] > Hh) { p[a] = Hh; if (!held && v[a] > 0) v[a] *= -o.bounce; }
+    }
+    if (!held) {
+      if (p.y <= o.r + .002) { if (Math.abs(v.y) < .6) v.y = 0; const f = Math.max(0, 1 - 3 * dt); v.x *= f; v.z *= f; }
+      o.mesh.rotation.x += v.z * dt * 1.5; o.mesh.rotation.z -= v.x * dt * 1.5;
+      if (p.z <= ZB + o.r + .02 && v.length() > 1.5 && p.distanceTo(TARGET) < o.r + .55 && now - lastScore > 500) {
+        score++; lastScore = now; flash = now;
+      }
+    }
+  }
+  for (let i = 0; i < objs.length; i++) for (let j = i + 1; j < objs.length; j++) {
+    const a = objs[i], b = objs[j];
+    const d = b.mesh.position.clone().sub(a.mesh.position), len = d.length(), min = a.r + b.r;
+    if (len >= min || len < 1e-4) continue;
+    const n = d.divideScalar(len), wa = b.held ? 1 : a.held ? 0 : .5, wb = 1 - wa, pen = min - len;
+    a.mesh.position.addScaledVector(n, -pen * wa); b.mesh.position.addScaledVector(n, pen * wb);
+    const vn = b.vel.clone().sub(a.vel).dot(n);
+    if (vn < 0) { const imp = -1.5 * vn; a.vel.addScaledVector(n, -imp * wa); b.vel.addScaledVector(n, imp * wb); }
+  }
+  for (const o of objs) {
+    const p = o.mesh.position, k = clamp((p.y - o.r) / 3.5, 0, .8);
+    o.shadow.position.set(p.x, .01, p.z);
+    o.shadow.scale.setScalar(o.r * 1.3 * (1 - k * .6));
+    o.shadow.material.opacity = .5 * (1 - k);
+  }
+}
+
+/* ---- App ---- */
+const video = $("video"), startEl = $("start"), hud = $("hud"), statusEl = $("status"), scoreEl = $("score"), errorEl = $("error");
+const camera = new Camera(video), tracker = new HandTracker();
+let running = false, camOn = false, hands = [];
+let now = performance.now(), last = now, lastBtn = 0, lastScore = 0, flash = 0, score = 0;
+const GAIN = 1.3;
+
+const mouse = { nx: 0, ny: 0, d: 6, down: false, active: false };
+const setMouse = e => { mouse.nx = e.clientX / innerWidth * 2 - 1; mouse.ny = 1 - e.clientY / innerHeight * 2; mouse.active = true; };
+canvas.addEventListener("pointermove", setMouse);
+canvas.addEventListener("pointerdown", e => { setMouse(e); mouse.down = true; });
+addEventListener("pointerup", e => { mouse.down = false; if (e.pointerType === "touch") mouse.active = false; });
+canvas.addEventListener("wheel", e => { mouse.d = clamp(mouse.d + e.deltaY * .005, 2.5, 9.5); e.preventDefault(); }, { passive: false });
 
 function resize() {
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.round(innerWidth * dpr);
-  canvas.height = Math.round(innerHeight * dpr);
-  renderer.setPixelRatio(1);
-  renderer.setSize(canvas.width, canvas.height, false);
-  cam.aspect = canvas.width / canvas.height;
+  renderer.setSize(innerWidth, innerHeight, false);
+  cam.aspect = innerWidth / innerHeight;
+  cam.fov = cam.aspect < 1 ? 85 : 62;
   cam.updateProjectionMatrix();
+  cam.updateMatrixWorld();
 }
 addEventListener("resize", resize);
 resize();
 
-function showBoard() {
-  const aspect = canvas.width / canvas.height;
-  sc = Math.min(.55, aspect * VH * .8 / 8.6);
-  let w = { x: 0, y: 0 };
-  if (hands.length) {
-    const c = hands.map(h => toPx(h.lm[9]));
-    w = toWorld({ x: c.reduce((a, p) => a + p.x, 0) / c.length, y: c.reduce((a, p) => a + p.y, 0) / c.length });
-  }
-  pivot.position.set(w.x, w.y, 0);
-  spin.rotation.y = 0;
-  resetMinis();
-  for (const k in grabs) delete grabs[k];
-  two = null; appear = 0; shown = true; pivot.visible = true;
-}
-function hideBoard() { shown = false; pivot.visible = false; for (const k in grabs) delete grabs[k]; two = null; }
-
-/* ---- gestos ---- */
-function grab(k, s) {
-  const rad = 80 * unitPx();
-  let best = null, bd = rad;
-  for (const m of minis) {
-    const v = m.localToWorld(new THREE.Vector3(0, .6, 0)).project(cam);
-    const d = Math.hypot((v.x + 1) / 2 * canvas.width - s.sm.x, (1 - v.y) / 2 * canvas.height - s.sm.y);
-    if (d < bd) { bd = d; best = m; }
-  }
-  if (best && !best.userData.held) {
-    best.userData.held = true;
-    grabs[k] = { t: "mini", m: best, roll0: s.roll, yaw0: best.rotation.y };
-    return;
-  }
-  const q = boardPoint(s.sm), w = toWorld(s.sm);
-  grabs[k] = q && Math.abs(q.x) < 4.5 && Math.abs(q.z) < 4.5
-    ? { t: "board", ox: pivot.position.x - w.x, oy: pivot.position.y - w.y }
-    : { t: "none" };
-}
-function drop(k) {
-  const g = grabs[k];
-  if (g && g.t === "mini") {   // fixa na casa mais próxima
-    const m = g.m, snap = v => clamp(Math.round(v - .5) + .5, -3.5, 3.5);
-    m.position.x = snap(m.position.x); m.position.z = snap(m.position.z);
-    m.userData.held = false;
-  }
-  delete grabs[k];
-}
-function move(k, s) {
-  const g = grabs[k];
-  if (g.t === "mini") {
-    const q = boardPoint(s.sm);
-    if (q) { g.m.position.x = clamp(q.x, -3.6, 3.6); g.m.position.z = clamp(q.z, -3.6, 3.6); }
-    g.m.rotation.y = g.yaw0 - wrap(s.roll - g.roll0);
-    mode = "peça";
-  } else if (g.t === "board") {
-    const w = toWorld(s.sm);
-    pivot.position.set(w.x + g.ox, w.y + g.oy, 0);
-    mode = "mover tabuleiro";
-  }
-}
-
-function gestures(list) {
-  scene.updateMatrixWorld(true);
-  const seen = new Set(list.map(h => h.key));
+function readHands(list, seen) {
+  const m = camera.mirrored;
   for (const h of list) {
-    const P = h.lm.map(toPx), d = (a, b) => Math.hypot(P[a].x - P[b].x, P[a].y - P[b].y);
-    const st = hs[h.key] || (hs[h.key] = { pinch: false, sm: null });
-    const ratio = d(4, 8) / Math.max(1, d(0, 9));
-    st.pinch = st.pinch ? ratio < .45 : ratio < .3;
-    const raw = { x: (P[4].x + P[8].x) / 2, y: (P[4].y + P[8].y) / 2 };
-    st.sm = st.sm ? { x: st.sm.x + (raw.x - st.sm.x) * .6, y: st.sm.y + (raw.y - st.sm.y) * .6 } : raw;
-    st.roll = Math.atan2(P[9].y - P[0].y, P[9].x - P[0].x);
-  }
-  for (const k in hs) if (!seen.has(k)) { hs[k].pinch = false; if (grabs[k]) drop(k); delete hs[k]; }
+    const lm = h.lm;
+    const nd = i => [clamp(((m ? 1 - lm[i].x : lm[i].x) * 2 - 1) * GAIN, -1, 1), clamp((1 - lm[i].y * 2) * GAIN, -1, 1)];
+    const palm = Math.hypot(lm[0].x - lm[9].x, lm[0].y - lm[9].y);
+    const dist = 9.5 - 7 * clamp((palm - .07) / .2, 0, 1);          // mão perto = objeto perto
+    const ratio = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y) / Math.max(.001, palm);
+    const [ax, ay] = nd(4), [bx, by] = nd(8);
+    const p = getPtr(h.key, ptAt((ax + bx) / 2, (ay + by) / 2, dist));
+    p.pinch = p.pinch ? ratio < .45 : ratio < .3;
+    seen.add(h.key);
 
-  mode = "";
-  if (!shown) return;
-  const act = Object.values(hs).filter(s => s.pinch);
-  if (act.length >= 2) {
-    for (const k in grabs) drop(k);
-    const [a, b] = act;
-    const dist = Math.hypot(b.sm.x - a.sm.x, b.sm.y - a.sm.y) || 1;
-    const ang = Math.atan2(b.sm.y - a.sm.y, b.sm.x - a.sm.x);
-    const w = toWorld({ x: (a.sm.x + b.sm.x) / 2, y: (a.sm.y + b.sm.y) / 2 });
-    if (!two) two = { d0: dist, a0: ang, s0: sc, y0: spin.rotation.y, w0: w, p0: pivot.position.clone() };
-    sc = clamp(two.s0 * dist / two.d0, .25, 1.4);
-    spin.rotation.y = two.y0 - wrap(ang - two.a0);
-    pivot.position.set(two.p0.x + w.x - two.w0.x, two.p0.y + w.y - two.w0.y, 0);
-    mode = "girar e escalar";
-  } else {
-    two = null;
-    for (const k in hs) {
-      const s = hs[k];
-      if (s.pinch && !grabs[k]) grab(k, s);
-      else if (!s.pinch && grabs[k]) drop(k);
-      if (grabs[k]) move(k, s);
-    }
+    const hd = hands3d[h.key] || (hands3d[h.key] = makeHand());
+    hd.g.visible = true;
+    const P = lm.map((l, i) => { const [x, y] = nd(i); return ptAt(x, y, dist + l.z * 6); });
+    P.forEach((v, i) => hd.pts[i].position.copy(v));
+    BONES.forEach(([a, b], k) => {
+      const bm = hd.bones[k];
+      bm.position.copy(P[a]).add(P[b]).multiplyScalar(.5);
+      bm.scale.z = Math.max(1e-4, P[a].distanceTo(P[b]));
+      bm.lookAt(P[b]);
+    });
   }
 }
 
-/* ---- voz ---- */
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-const norm = t => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-let rec = null, lastFire = 0;
-function startVoice() {
-  if (!SR || rec) { if (!SR) $("tab").textContent = "Tabuleiro"; return; }
-  rec = new SR();
-  rec.lang = "pt-BR"; rec.continuous = true; rec.interimResults = true;
-  rec.onresult = e => {
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const t = norm(e.results[i][0].transcript);
-      if (Date.now() - lastFire < 2500) continue;
-      if (t.includes("fechar") || t.includes("guardar")) { hideBoard(); lastFire = Date.now(); }
-      else if (t.includes("tabuleiro")) { showBoard(); lastFire = Date.now(); }
-    }
-  };
-  rec.onerror = e => { if (e.error === "not-allowed") { $("tab").textContent = "Tabuleiro (mic negado)"; rec = null; } };
-  rec.onend = () => { if (running && rec) { try { rec.start(); } catch {} } };
-  try { rec.start(); } catch {}
-}
-$("tab").addEventListener("click", () => shown ? hideBoard() : showBoard());
-
-/* ---- laço principal ---- */
-function frame(now = performance.now()) {
-  if (!running) return;
+function frame(t) {
   requestAnimationFrame(frame);
-  const dt = Math.min(.05, (now - last) / 1000 || 0); last = now;
+  now = t || performance.now();
+  const dt = Math.min(.05, (now - last) / 1000 || .016); last = now;
 
-  const found = tracker.detect(video);
-  if (found) { hands = found; gestures(found); }
-
-  const cw = canvas.width, ch = canvas.height;
-  const vw = video.videoWidth, vh = video.videoHeight;
-  if (!vw || !vh) return;
-
-  const s = Math.max(cw / vw, ch / vh);
-  lay = { ox: (cw - vw * s) / 2, oy: (ch - vh * s) / 2, s, vw, vh };
-
-  ctx.fillStyle = "#0b0d10";
-  ctx.fillRect(0, 0, cw, ch);
-  ctx.save();
-  if (camera.mirrored) { ctx.translate(cw, 0); ctx.scale(-1, 1); }
-  ctx.drawImage(video, lay.ox, lay.oy, vw * s, vh * s);
-  ctx.restore();
-
-  if (shown) {
-    appear = Math.min(1, appear + dt * 2.5);
-    pivot.scale.setScalar(Math.max(1e-3, sc * (1 - Math.pow(1 - appear, 3))));
-    for (const m of minis) {
-      const h = m.userData.held;
-      m.scale.setScalar(m.scale.x + ((h ? 1.2 : 1) - m.scale.x) * .3);
-      m.position.y += (TOP + (h ? .6 : 0) - m.position.y) * .3;
-    }
-    renderer.render(scene, cam);
-    ctx.drawImage(renderer.domElement, 0, 0, cw, ch);
+  if (camOn) { const found = tracker.detect(video); if (found) hands = found; }
+  const seen = new Set();
+  if (camOn && hands.length) readHands(hands, seen);
+  else if (mouse.active && running) {
+    const p = getPtr("mouse", ptAt(mouse.nx, mouse.ny, mouse.d));
+    p.pinch = mouse.down; seen.add("mouse");
   }
+  for (const p of [...ptrs.values()]) if (!seen.has(p.key)) dropPtr(p);
+  for (const k in hands3d) hands3d[k].g.visible = seen.has(k);
+  ptrs.forEach(updatePtr);
 
-  const unit = unitPx();
-  for (const h of hands) {
-    drawRig(ctx, h.lm, toPx, unit);
-    const st = hs[h.key];
-    if (st && st.pinch && st.sm) {
-      ctx.strokeStyle = "#fff"; ctx.lineWidth = 3 * unit;
-      ctx.beginPath(); ctx.arc(st.sm.x, st.sm.y, 16 * unit, 0, Math.PI * 2); ctx.stroke();
-    }
-  }
+  physics(dt);
+  targetMat.emissiveIntensity = Math.max(.3, 2.5 - (now - flash) / 150);
+  btn.position.y = .95 - (now - lastBtn < 200 ? .04 : 0);
+  renderer.render(scene, cam);
 
-  if (found) {
-    const n = hands.length;
-    statusEl.textContent = (n ? `${n} ${n === 1 ? "mão" : "mãos"}` : "Procurando mãos…") + (mode ? " · " + mode : "");
+  if (running) {
+    const n = hands.length, held = [...ptrs.values()].some(p => p.grab);
+    statusEl.textContent = camOn
+      ? (n ? `${n} ${n === 1 ? "mão" : "mãos"}` : "Procurando mãos…") + (held ? " · segurando" : "")
+      : (held ? "Segurando" : "Modo mouse");
+    scoreEl.textContent = `Alvo: ${score}`;
   }
 }
+resetObjs();
+requestAnimationFrame(frame);
 
-async function begin(facing) {
+async function begin(useCam) {
   errorEl.textContent = "";
-  $("go").disabled = true;
+  $("go").disabled = $("nocam").disabled = true;
   $("go").textContent = "Carregando…";
   try {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error("Este navegador não permite acesso à câmera. Abra a página por HTTPS.");
+    if (useCam) {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error("Este navegador não permite acesso à câmera. Abra a página por HTTPS.");
+      await camera.start("user");
+      if (!tracker.landmarker) await tracker.init();
+      camOn = true;
     }
-    await camera.start(facing);
-    if (!tracker.landmarker) await tracker.init();
-    startEl.hidden = true;
-    hud.hidden = false;
-    running = true;
-    frame();
+    $("pip").hidden = $("flip").hidden = !useCam;
+    startEl.hidden = true; hud.hidden = false; running = true;
   } catch (e) {
     const denied = e && (e.name === "NotAllowedError" || e.name === "SecurityError");
     errorEl.textContent = denied
       ? "Permissão da câmera negada. Libere o acesso nas configurações do navegador e tente de novo."
       : (e && e.message) || "Não foi possível iniciar.";
-    $("go").disabled = false;
+    $("go").disabled = $("nocam").disabled = false;
     $("go").textContent = "Tentar de novo";
   }
 }
-
-$("go").addEventListener("click", () => { startVoice(); begin("user"); });
+$("go").addEventListener("click", () => begin(true));
+$("nocam").addEventListener("click", () => begin(false));
+$("reset").addEventListener("click", resetObjs);
+$("pip").addEventListener("click", () => {
+  const on = video.classList.toggle("on");
+  $("pip").textContent = on ? "Ocultar câmera" : "Ver câmera";
+});
 $("flip").addEventListener("click", async () => {
   hands = [];
-  for (const k in grabs) drop(k);
-  for (const k in hs) delete hs[k];
   try { await camera.start(camera.facing === "user" ? "environment" : "user"); }
   catch { await camera.start("user").catch(() => {}); }
 });
