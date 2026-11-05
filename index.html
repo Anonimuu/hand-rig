@@ -6,12 +6,7 @@
 <meta name="theme-color" content="#0b0d10">
 <title>Hand Rig</title>
 <style>
-  :root {
-    --bg: #0b0d10;
-    --fg: #e8ecf1;
-    --muted: #8a94a3;
-    --accent: #3df5c1;
-  }
+  :root { --bg: #0b0d10; --fg: #e8ecf1; --muted: #8a94a3; --accent: #3df5c1; }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
     font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
@@ -22,19 +17,20 @@
     justify-content: center; gap: 16px; padding: 24px; text-align: center; background: var(--bg); z-index: 2; }
   .overlay[hidden] { display: none; }
   .overlay h1 { margin: 0; font-size: 28px; letter-spacing: .02em; }
-  .overlay p { margin: 0; max-width: 32ch; color: var(--muted); }
+  .overlay p { margin: 0; max-width: 36ch; color: var(--muted); }
   button { font: inherit; color: var(--bg); background: var(--accent); border: 0; border-radius: 999px;
     padding: 14px 28px; font-weight: 600; cursor: pointer; }
   button:focus-visible { outline: 3px solid var(--fg); outline-offset: 3px; }
   #error { color: #ff7b7b; max-width: 36ch; min-height: 1.4em; }
 
   .hud { position: fixed; left: 0; right: 0; z-index: 1; display: flex; justify-content: space-between;
-    align-items: center; padding: 12px; pointer-events: none; }
+    align-items: center; gap: 8px; padding: 12px; pointer-events: none; }
   .hud.top { top: env(safe-area-inset-top, 0px); }
+  .hud .right { display: flex; gap: 8px; }
   .chip { pointer-events: auto; background: rgba(11,13,16,.6); color: var(--fg); border: 1px solid rgba(255,255,255,.18);
     border-radius: 999px; padding: 8px 14px; font-size: 13px; font-weight: 500; backdrop-filter: blur(6px); }
   #status { pointer-events: none; font-variant-numeric: tabular-nums; }
-  #flip { cursor: pointer; }
+  #flip, #tab { cursor: pointer; }
 </style>
 </head>
 <body>
@@ -44,19 +40,24 @@
 
 <div class="hud top" id="hud" hidden>
   <span class="chip" id="status">Procurando mãos…</span>
-  <button class="chip" id="flip" type="button">Virar câmera</button>
+  <div class="right">
+    <button class="chip" id="tab" type="button">🎤 diga “tabuleiro”</button>
+    <button class="chip" id="flip" type="button">Virar câmera</button>
+  </div>
 </div>
 
 <div class="overlay" id="start">
   <h1>Hand Rig</h1>
-  <p>A câmera vai rastrear suas mãos e desenhar o esqueleto sobre elas. O vídeo não sai do aparelho.</p>
-  <button id="go" type="button">Ativar câmera</button>
+  <p>A câmera rastreia suas mãos e desenha o esqueleto sobre elas. Diga “tabuleiro” para invocar o tabuleiro de RPG; “fechar” para guardá-lo. O vídeo não sai do aparelho.</p>
+  <p>Pinça (polegar + indicador) numa miniatura: pega, move e gira o pulso para virá-la; ao soltar ela se fixa na casa. Pinça no tabuleiro: arrasta. Pinça com as duas mãos: gira e muda o tamanho.</p>
+  <button id="go" type="button">Ativar câmera e microfone</button>
   <div id="error" role="alert"></div>
 </div>
 
 <script type="module">
 import { FilesetResolver, HandLandmarker }
   from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/vision_bundle.mjs";
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
 
 const WASM_URL  = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm";
 const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
@@ -84,8 +85,8 @@ class Camera {
 }
 
 /* ------------------------------------------------------------------ *
- * Camada 2: detecção das mãos (reutilizável por futuras funções)
- * Emite 21 pontos normalizados (x, y, z) por mão.
+ * Camada 2: detecção das mãos
+ * Devolve [{ key, lm }]: 21 pontos normalizados por mão.
  * ------------------------------------------------------------------ */
 class HandTracker {
   constructor() { this.landmarker = null; this.lastTime = -1; }
@@ -106,7 +107,13 @@ class HandTracker {
     if (!this.landmarker || video.readyState < 2 || video.currentTime === this.lastTime) return null;
     this.lastTime = video.currentTime;
     const r = this.landmarker.detectForVideo(video, performance.now());
-    return r.landmarks || [];
+    const side = r.handedness || r.handednesses || [];
+    const count = {};
+    return (r.landmarks || []).map((lm, i) => {
+      const n = side[i]?.[0]?.categoryName || "Hand";
+      count[n] = (count[n] || 0) + 1;
+      return { key: n + count[n], lm };
+    });
   }
 }
 
@@ -128,14 +135,12 @@ function drawRig(ctx, hand, toPx, scale) {
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
-  // palma
   ctx.strokeStyle = "rgba(255,255,255,.55)";
   ctx.lineWidth = Math.max(2, 3 * scale);
   for (const [a, b] of PALM) {
     ctx.beginPath(); ctx.moveTo(P[a].x, P[a].y); ctx.lineTo(P[b].x, P[b].y); ctx.stroke();
   }
 
-  // ossos de cada dedo
   for (const f of FINGERS) {
     ctx.strokeStyle = f.color;
     ctx.lineWidth = Math.max(3, 5 * scale);
@@ -144,7 +149,6 @@ function drawRig(ctx, hand, toPx, scale) {
     ctx.stroke();
   }
 
-  // articulações
   for (let i = 0; i < P.length; i++) {
     const color = i === 0 ? "#ffffff" : FINGERS.find(f => f.chain.includes(i)).color;
     const r = (TIPS.has(i) ? 7 : i === 0 ? 8 : 5) * scale;
@@ -154,6 +158,83 @@ function drawRig(ctx, hand, toPx, scale) {
     ctx.beginPath(); ctx.arc(P[i].x, P[i].y, r, 0, Math.PI * 2); ctx.fill();
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * Camada 4: tabuleiro 3D de RPG (three.js, renderizado fora da tela
+ * e composto no canvas principal, entre o vídeo e o rig)
+ * Hierarquia: pivot (posição/escala) > tilt (inclinação) > spin (giro) > peças
+ * Unidades locais do tabuleiro: 1 casa = 1; tabuleiro 8x8 (-4..4).
+ * ------------------------------------------------------------------ */
+const VH = 10, FOV = 40, TOP = 0.15;
+const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+const scene = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100);
+cam.position.z = (VH / 2) / Math.tan(FOV / 2 * Math.PI / 180);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.5));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(3, 6, 8); scene.add(sun);
+
+const pivot = new THREE.Group(), tilt = new THREE.Group(), spin = new THREE.Group();
+tilt.rotation.x = 1.0;
+pivot.add(tilt); tilt.add(spin); scene.add(pivot);
+pivot.visible = false;
+
+const cache = {};
+const mat = c => cache[c] || (cache[c] = new THREE.MeshStandardMaterial({ color: c, roughness: .55 }));
+function add(parent, geo, color, x = 0, y = 0, z = 0) {
+  const m = new THREE.Mesh(geo, mat(color)); m.position.set(x, y, z); parent.add(m); return m;
+}
+const Cyl = (a, b, h) => new THREE.CylinderGeometry(a, b, h, 20);
+const Sph = r => new THREE.SphereGeometry(r, 16, 12);
+const Cone = (r, h) => new THREE.ConeGeometry(r, h, 18);
+const Box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+
+add(spin, Box(8.6, .4, 8.6), 0x3b2a1a, 0, -.1, 0);
+for (let i = 0; i < 8; i++) for (let j = 0; j < 8; j++)
+  add(spin, Box(.96, .14, .96), (i + j) % 2 ? 0x7a6a4f : 0xcdb98f, i - 3.5, .08, j - 3.5);
+
+function makeMini(kind) {
+  const g = new THREE.Group(), b = new THREE.Group(); g.add(b);
+  const P = (geo, c, x, y, z) => add(b, geo, c, x, y, z);
+  if (kind === "orc") {
+    b.scale.setScalar(1.35);
+    P(Cyl(.5, .5, .14), 0x5a1010, 0, .07, 0);
+    P(Cyl(.34, .46, 1), 0x4f7f33, 0, .64, 0);
+    P(Sph(.3), 0x5f9a3c, 0, 1.35, 0);
+    for (const s of [-1, 1]) {
+      P(Cone(.07, .3), 0xeeeeee, s * .22, 1.66, 0);
+      P(Cone(.04, .16), 0xffffff, s * .12, 1.15, .24);
+      P(Sph(.05), 0xff2222, s * .1, 1.4, .26);
+    }
+    P(Box(.06, 1.1, .06), 0x5a3a1a, .52, .8, 0);
+    P(Box(.4, .3, .06), 0x999999, .68, 1.2, 0);
+  } else {
+    P(Cyl(.38, .38, .12), 0x222222, 0, .06, 0);
+    if (kind === "knight") {
+      P(Cyl(.2, .26, .7), 0x4a7bd1, 0, .47, 0);
+      P(Sph(.2), 0xe0c9a6, 0, .98, 0);
+      P(Box(.08, .8, .08), 0xcccccc, .32, .75, 0);
+      P(Box(.3, .36, .06), 0xb8a040, -.3, .55, .1);
+    } else if (kind === "archer") {
+      P(Cone(.28, .85), 0x3aa05a, 0, .52, 0);
+      P(Sph(.18), 0xe0c9a6, 0, .98, 0);
+      P(Box(.05, .95, .05), 0x6b4a2a, .32, .62, 0);
+    } else {
+      P(Cone(.3, 1), 0x7a4fd0, 0, .58, 0);
+      P(Sph(.18), 0xe0c9a6, 0, 1.12, 0);
+      P(Cone(.22, .5), 0x3a2470, 0, 1.45, 0);
+      P(Box(.05, 1.25, .05), 0x6b4a2a, .34, .72, 0);
+      P(Sph(.1), 0x66e0ff, .34, 1.4, 0);
+    }
+  }
+  spin.add(g);
+  return g;
+}
+const START = [["knight", -1.5, 2.5], ["archer", .5, 2.5], ["mage", 2.5, 2.5], ["orc", .5, -2.5]];
+const minis = START.map(([k]) => makeMini(k));
+function resetMinis() {
+  minis.forEach((m, i) => { m.position.set(START[i][1], TOP, START[i][2]); m.rotation.y = i === 3 ? 0 : Math.PI; m.userData.held = false; });
+}
+resetMinis();
 
 /* ------------------------------------------------------------------ *
  * App
@@ -167,42 +248,212 @@ const tracker = new HandTracker();
 let hands = [];
 let running = false;
 
+// estado do tabuleiro e dos gestos
+let shown = false, appear = 1, sc = .5, mode = "", two = null, last = 0;
+const hs = {}, grabs = {};
+let lay = { ox: 0, oy: 0, s: 1, vw: 1, vh: 1 };
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
+const unitPx = () => (window.devicePixelRatio || 1) * Math.min(innerWidth, innerHeight) / 420;
+
+const toPx = p => {
+  const x = lay.ox + p.x * lay.vw * lay.s;
+  return { x: camera.mirrored ? canvas.width - x : x, y: lay.oy + p.y * lay.vh * lay.s };
+};
+const toWorld = p => ({
+  x: (p.x / canvas.width - .5) * VH * canvas.width / canvas.height,
+  y: -(p.y / canvas.height - .5) * VH
+});
+
+const ray = new THREE.Raycaster(), plane = new THREE.Plane(), hit = new THREE.Vector3();
+function boardPoint(p) {
+  ray.setFromCamera(new THREE.Vector2(p.x / canvas.width * 2 - 1, 1 - p.y / canvas.height * 2), cam);
+  const n = new THREE.Vector3(0, 1, 0).transformDirection(spin.matrixWorld);
+  const o = new THREE.Vector3(0, TOP, 0).applyMatrix4(spin.matrixWorld);
+  plane.setFromNormalAndCoplanarPoint(n, o);
+  return ray.ray.intersectPlane(plane, hit) ? spin.worldToLocal(hit.clone()) : null;
+}
+
 function resize() {
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(innerWidth * dpr);
   canvas.height = Math.round(innerHeight * dpr);
+  renderer.setPixelRatio(1);
+  renderer.setSize(canvas.width, canvas.height, false);
+  cam.aspect = canvas.width / canvas.height;
+  cam.updateProjectionMatrix();
 }
 addEventListener("resize", resize);
 resize();
 
-function frame() {
+function showBoard() {
+  const aspect = canvas.width / canvas.height;
+  sc = Math.min(.55, aspect * VH * .8 / 8.6);
+  let w = { x: 0, y: 0 };
+  if (hands.length) {
+    const c = hands.map(h => toPx(h.lm[9]));
+    w = toWorld({ x: c.reduce((a, p) => a + p.x, 0) / c.length, y: c.reduce((a, p) => a + p.y, 0) / c.length });
+  }
+  pivot.position.set(w.x, w.y, 0);
+  spin.rotation.y = 0;
+  resetMinis();
+  for (const k in grabs) delete grabs[k];
+  two = null; appear = 0; shown = true; pivot.visible = true;
+}
+function hideBoard() { shown = false; pivot.visible = false; for (const k in grabs) delete grabs[k]; two = null; }
+
+/* ---- gestos ---- */
+function grab(k, s) {
+  const rad = 80 * unitPx();
+  let best = null, bd = rad;
+  for (const m of minis) {
+    const v = m.localToWorld(new THREE.Vector3(0, .6, 0)).project(cam);
+    const d = Math.hypot((v.x + 1) / 2 * canvas.width - s.sm.x, (1 - v.y) / 2 * canvas.height - s.sm.y);
+    if (d < bd) { bd = d; best = m; }
+  }
+  if (best && !best.userData.held) {
+    best.userData.held = true;
+    grabs[k] = { t: "mini", m: best, roll0: s.roll, yaw0: best.rotation.y };
+    return;
+  }
+  const q = boardPoint(s.sm), w = toWorld(s.sm);
+  grabs[k] = q && Math.abs(q.x) < 4.5 && Math.abs(q.z) < 4.5
+    ? { t: "board", ox: pivot.position.x - w.x, oy: pivot.position.y - w.y }
+    : { t: "none" };
+}
+function drop(k) {
+  const g = grabs[k];
+  if (g && g.t === "mini") {   // fixa na casa mais próxima
+    const m = g.m, snap = v => clamp(Math.round(v - .5) + .5, -3.5, 3.5);
+    m.position.x = snap(m.position.x); m.position.z = snap(m.position.z);
+    m.userData.held = false;
+  }
+  delete grabs[k];
+}
+function move(k, s) {
+  const g = grabs[k];
+  if (g.t === "mini") {
+    const q = boardPoint(s.sm);
+    if (q) { g.m.position.x = clamp(q.x, -3.6, 3.6); g.m.position.z = clamp(q.z, -3.6, 3.6); }
+    g.m.rotation.y = g.yaw0 - wrap(s.roll - g.roll0);
+    mode = "peça";
+  } else if (g.t === "board") {
+    const w = toWorld(s.sm);
+    pivot.position.set(w.x + g.ox, w.y + g.oy, 0);
+    mode = "mover tabuleiro";
+  }
+}
+
+function gestures(list) {
+  scene.updateMatrixWorld(true);
+  const seen = new Set(list.map(h => h.key));
+  for (const h of list) {
+    const P = h.lm.map(toPx), d = (a, b) => Math.hypot(P[a].x - P[b].x, P[a].y - P[b].y);
+    const st = hs[h.key] || (hs[h.key] = { pinch: false, sm: null });
+    const ratio = d(4, 8) / Math.max(1, d(0, 9));
+    st.pinch = st.pinch ? ratio < .45 : ratio < .3;
+    const raw = { x: (P[4].x + P[8].x) / 2, y: (P[4].y + P[8].y) / 2 };
+    st.sm = st.sm ? { x: st.sm.x + (raw.x - st.sm.x) * .6, y: st.sm.y + (raw.y - st.sm.y) * .6 } : raw;
+    st.roll = Math.atan2(P[9].y - P[0].y, P[9].x - P[0].x);
+  }
+  for (const k in hs) if (!seen.has(k)) { hs[k].pinch = false; if (grabs[k]) drop(k); delete hs[k]; }
+
+  mode = "";
+  if (!shown) return;
+  const act = Object.values(hs).filter(s => s.pinch);
+  if (act.length >= 2) {
+    for (const k in grabs) drop(k);
+    const [a, b] = act;
+    const dist = Math.hypot(b.sm.x - a.sm.x, b.sm.y - a.sm.y) || 1;
+    const ang = Math.atan2(b.sm.y - a.sm.y, b.sm.x - a.sm.x);
+    const w = toWorld({ x: (a.sm.x + b.sm.x) / 2, y: (a.sm.y + b.sm.y) / 2 });
+    if (!two) two = { d0: dist, a0: ang, s0: sc, y0: spin.rotation.y, w0: w, p0: pivot.position.clone() };
+    sc = clamp(two.s0 * dist / two.d0, .25, 1.4);
+    spin.rotation.y = two.y0 - wrap(ang - two.a0);
+    pivot.position.set(two.p0.x + w.x - two.w0.x, two.p0.y + w.y - two.w0.y, 0);
+    mode = "girar e escalar";
+  } else {
+    two = null;
+    for (const k in hs) {
+      const s = hs[k];
+      if (s.pinch && !grabs[k]) grab(k, s);
+      else if (!s.pinch && grabs[k]) drop(k);
+      if (grabs[k]) move(k, s);
+    }
+  }
+}
+
+/* ---- voz ---- */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const norm = t => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+let rec = null, lastFire = 0;
+function startVoice() {
+  if (!SR || rec) { if (!SR) $("tab").textContent = "Tabuleiro"; return; }
+  rec = new SR();
+  rec.lang = "pt-BR"; rec.continuous = true; rec.interimResults = true;
+  rec.onresult = e => {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = norm(e.results[i][0].transcript);
+      if (Date.now() - lastFire < 2500) continue;
+      if (t.includes("fechar") || t.includes("guardar")) { hideBoard(); lastFire = Date.now(); }
+      else if (t.includes("tabuleiro")) { showBoard(); lastFire = Date.now(); }
+    }
+  };
+  rec.onerror = e => { if (e.error === "not-allowed") { $("tab").textContent = "Tabuleiro (mic negado)"; rec = null; } };
+  rec.onend = () => { if (running && rec) { try { rec.start(); } catch {} } };
+  try { rec.start(); } catch {}
+}
+$("tab").addEventListener("click", () => shown ? hideBoard() : showBoard());
+
+/* ---- laço principal ---- */
+function frame(now = performance.now()) {
   if (!running) return;
   requestAnimationFrame(frame);
+  const dt = Math.min(.05, (now - last) / 1000 || 0); last = now;
 
   const found = tracker.detect(video);
-  if (found) {
-    hands = found;
-    statusEl.textContent = hands.length ? `${hands.length} ${hands.length === 1 ? "mão" : "mãos"}` : "Procurando mãos…";
-  }
+  if (found) { hands = found; gestures(found); }
 
   const cw = canvas.width, ch = canvas.height;
   const vw = video.videoWidth, vh = video.videoHeight;
   if (!vw || !vh) return;
 
-  // "cover": o vídeo preenche a tela sem distorcer
   const s = Math.max(cw / vw, ch / vh);
-  const ox = (cw - vw * s) / 2, oy = (ch - vh * s) / 2;
+  lay = { ox: (cw - vw * s) / 2, oy: (ch - vh * s) / 2, s, vw, vh };
 
-  ctx.save();
   ctx.fillStyle = "#0b0d10";
   ctx.fillRect(0, 0, cw, ch);
+  ctx.save();
   if (camera.mirrored) { ctx.translate(cw, 0); ctx.scale(-1, 1); }
-  ctx.drawImage(video, ox, oy, vw * s, vh * s);
-
-  const unit = (window.devicePixelRatio || 1) * Math.min(innerWidth, innerHeight) / 420;
-  const toPx = p => ({ x: ox + p.x * vw * s, y: oy + p.y * vh * s });
-  for (const hand of hands) drawRig(ctx, hand, toPx, unit);
+  ctx.drawImage(video, lay.ox, lay.oy, vw * s, vh * s);
   ctx.restore();
+
+  if (shown) {
+    appear = Math.min(1, appear + dt * 2.5);
+    pivot.scale.setScalar(Math.max(1e-3, sc * (1 - Math.pow(1 - appear, 3))));
+    for (const m of minis) {
+      const h = m.userData.held;
+      m.scale.setScalar(m.scale.x + ((h ? 1.2 : 1) - m.scale.x) * .3);
+      m.position.y += (TOP + (h ? .6 : 0) - m.position.y) * .3;
+    }
+    renderer.render(scene, cam);
+    ctx.drawImage(renderer.domElement, 0, 0, cw, ch);
+  }
+
+  const unit = unitPx();
+  for (const h of hands) {
+    drawRig(ctx, h.lm, toPx, unit);
+    const st = hs[h.key];
+    if (st && st.pinch && st.sm) {
+      ctx.strokeStyle = "#fff"; ctx.lineWidth = 3 * unit;
+      ctx.beginPath(); ctx.arc(st.sm.x, st.sm.y, 16 * unit, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  if (found) {
+    const n = hands.length;
+    statusEl.textContent = (n ? `${n} ${n === 1 ? "mão" : "mãos"}` : "Procurando mãos…") + (mode ? " · " + mode : "");
+  }
 }
 
 async function begin(facing) {
@@ -229,9 +480,11 @@ async function begin(facing) {
   }
 }
 
-$("go").addEventListener("click", () => begin("user"));
+$("go").addEventListener("click", () => { startVoice(); begin("user"); });
 $("flip").addEventListener("click", async () => {
   hands = [];
+  for (const k in grabs) drop(k);
+  for (const k in hs) delete hs[k];
   try { await camera.start(camera.facing === "user" ? "environment" : "user"); }
   catch { await camera.start("user").catch(() => {}); }
 });
