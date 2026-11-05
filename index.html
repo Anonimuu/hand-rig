@@ -49,6 +49,7 @@
 <div class="overlay" id="start">
   <h1>Hand Rig</h1>
   <p>A câmera rastreia suas mãos e desenha o esqueleto sobre elas. Diga “tabuleiro” para invocar o tabuleiro de RPG; “fechar” para guardá-lo. O vídeo não sai do aparelho.</p>
+  <p>O tabuleiro fica fixo no ambiente: gire o celular e ele permanece no mesmo lugar.</p>
   <p>Pinça (polegar + indicador) numa miniatura: pega, move e gira o pulso para virá-la; ao soltar ela se fixa na casa. Pinça no tabuleiro: arrasta. Pinça com as duas mãos: gira e muda o tamanho.</p>
   <button id="go" type="button">Ativar câmera e microfone</button>
   <div id="error" role="alert"></div>
@@ -165,11 +166,10 @@ function drawRig(ctx, hand, toPx, scale) {
  * Hierarquia: pivot (posição/escala) > tilt (inclinação) > spin (giro) > peças
  * Unidades locais do tabuleiro: 1 casa = 1; tabuleiro 8x8 (-4..4).
  * ------------------------------------------------------------------ */
-const VH = 10, FOV = 40, TOP = 0.15;
+const DIST = 14, TOP = 0.15, HFOV = 65;  // HFOV: campo de visão aproximado (lado maior) da câmera do aparelho
 const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
 const scene = new THREE.Scene();
-const cam = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100);
-cam.position.z = (VH / 2) / Math.tan(FOV / 2 * Math.PI / 180);
+const cam = new THREE.PerspectiveCamera(40, 1, 0.1, 200);  // fica na origem e só gira, como o celular
 scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.5));
 const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(3, 6, 8); scene.add(sun);
 
@@ -260,18 +260,46 @@ const toPx = p => {
   const x = lay.ox + p.x * lay.vw * lay.s;
   return { x: camera.mirrored ? canvas.width - x : x, y: lay.oy + p.y * lay.vh * lay.s };
 };
-const toWorld = p => ({
-  x: (p.x / canvas.width - .5) * VH * canvas.width / canvas.height,
-  y: -(p.y / canvas.height - .5) * VH
-});
+// tela espelhada (câmera frontal) <-> espaço de pixels da câmera 3D
+const toCam = p => camera.mirrored ? { x: canvas.width - p.x, y: p.y } : p;
+const rayAt = p => { ray.setFromCamera(new THREE.Vector2(p.x / canvas.width * 2 - 1, 1 - p.y / canvas.height * 2), cam); return ray.ray; };
+const planeHit = (p, point, n) => { plane.setFromNormalAndCoplanarPoint(n, point); return rayAt(p).intersectPlane(plane, new THREE.Vector3()); };
+const camFwd = () => new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
+
+// giroscópio: a câmera 3D gira junto com o celular, então o tabuleiro fica fixo no ambiente
+const gyro = { ok: false, a: 0, b: 0, g: 0 };
+async function startGyro() {
+  try {
+    if (typeof DeviceOrientationEvent !== "undefined" && DeviceOrientationEvent.requestPermission) {
+      if (await DeviceOrientationEvent.requestPermission() !== "granted") return;
+    }
+    addEventListener("deviceorientation", e => {
+      if (e.alpha != null) { gyro.ok = true; gyro.a = e.alpha; gyro.b = e.beta; gyro.g = e.gamma; }
+    }, true);
+  } catch {}
+}
+const _e = new THREE.Euler(), _q0 = new THREE.Quaternion(), _z = new THREE.Vector3(0, 0, 1);
+const _q1 = new THREE.Quaternion(-Math.SQRT1_2, 0, 0, Math.SQRT1_2);
+const _flip = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+function updateCam(s, vw, vh) {
+  const f = Math.max(vw, vh) / (2 * Math.tan(HFOV / 2 * Math.PI / 180));
+  const fov = 2 * Math.atan(canvas.height / (2 * f * s)) * 180 / Math.PI;
+  if (Math.abs(fov - cam.fov) > .01) { cam.fov = fov; cam.updateProjectionMatrix(); }
+  if (gyro.ok) {
+    const d = THREE.MathUtils.degToRad;
+    const orient = d((screen.orientation ? screen.orientation.angle : window.orientation) || 0);
+    _e.set(d(gyro.b), d(gyro.a), -d(gyro.g), "YXZ");
+    cam.quaternion.setFromEuler(_e).multiply(_q1).multiply(_q0.setFromAxisAngle(_z, -orient));
+    if (camera.mirrored) cam.quaternion.multiply(_flip);  // câmera frontal olha para o lado oposto
+  } else cam.quaternion.identity();
+  cam.updateMatrixWorld(true);
+}
 
 const ray = new THREE.Raycaster(), plane = new THREE.Plane(), hit = new THREE.Vector3();
 function boardPoint(p) {
-  ray.setFromCamera(new THREE.Vector2(p.x / canvas.width * 2 - 1, 1 - p.y / canvas.height * 2), cam);
-  const n = new THREE.Vector3(0, 1, 0).transformDirection(spin.matrixWorld);
-  const o = new THREE.Vector3(0, TOP, 0).applyMatrix4(spin.matrixWorld);
-  plane.setFromNormalAndCoplanarPoint(n, o);
-  return ray.ray.intersectPlane(plane, hit) ? spin.worldToLocal(hit.clone()) : null;
+  const h = planeHit(p, new THREE.Vector3(0, TOP, 0).applyMatrix4(spin.matrixWorld),
+                     new THREE.Vector3(0, 1, 0).transformDirection(spin.matrixWorld));
+  return h ? spin.worldToLocal(h) : null;
 }
 
 function resize() {
@@ -287,14 +315,16 @@ addEventListener("resize", resize);
 resize();
 
 function showBoard() {
-  const aspect = canvas.width / canvas.height;
-  sc = Math.min(.55, aspect * VH * .8 / 8.6);
-  let w = { x: 0, y: 0 };
+  const aspect = canvas.width / canvas.height, visH = 2 * DIST * Math.tan(cam.fov / 2 * Math.PI / 180);
+  sc = Math.min(.55, aspect * visH * .8 / 8.6);
+  let c = { x: canvas.width / 2, y: canvas.height / 2 };
   if (hands.length) {
-    const c = hands.map(h => toPx(h.lm[9]));
-    w = toWorld({ x: c.reduce((a, p) => a + p.x, 0) / c.length, y: c.reduce((a, p) => a + p.y, 0) / c.length });
+    const q = hands.map(h => toCam(toPx(h.lm[9])));
+    c = { x: q.reduce((a, p) => a + p.x, 0) / q.length, y: q.reduce((a, p) => a + p.y, 0) / q.length };
   }
-  pivot.position.set(w.x, w.y, 0);
+  const dir = rayAt(c).direction;           // o tabuleiro nasce na direção das mãos e fica fixo no mundo
+  pivot.position.copy(dir).multiplyScalar(DIST);
+  pivot.rotation.y = Math.atan2(-dir.x, -dir.z);
   spin.rotation.y = 0;
   resetMinis();
   for (const k in grabs) delete grabs[k];
@@ -316,9 +346,9 @@ function grab(k, s) {
     grabs[k] = { t: "mini", m: best, roll0: s.roll, yaw0: best.rotation.y };
     return;
   }
-  const q = boardPoint(s.sm), w = toWorld(s.sm);
-  grabs[k] = q && Math.abs(q.x) < 4.5 && Math.abs(q.z) < 4.5
-    ? { t: "board", ox: pivot.position.x - w.x, oy: pivot.position.y - w.y }
+  const q = boardPoint(s.sm), n = camFwd(), p0 = pivot.position.clone(), w = planeHit(s.sm, p0, n);
+  grabs[k] = q && w && Math.abs(q.x) < 4.5 && Math.abs(q.z) < 4.5
+    ? { t: "board", n, p0, off: p0.clone().sub(w) }
     : { t: "none" };
 }
 function drop(k) {
@@ -338,8 +368,8 @@ function move(k, s) {
     g.m.rotation.y = g.yaw0 - wrap(s.roll - g.roll0);
     mode = "peça";
   } else if (g.t === "board") {
-    const w = toWorld(s.sm);
-    pivot.position.set(w.x + g.ox, w.y + g.oy, 0);
+    const w = planeHit(s.sm, g.p0, g.n);
+    if (w) pivot.position.copy(w.add(g.off));
     mode = "mover tabuleiro";
   }
 }
@@ -348,7 +378,7 @@ function gestures(list) {
   scene.updateMatrixWorld(true);
   const seen = new Set(list.map(h => h.key));
   for (const h of list) {
-    const P = h.lm.map(toPx), d = (a, b) => Math.hypot(P[a].x - P[b].x, P[a].y - P[b].y);
+    const P = h.lm.map(p => toCam(toPx(p))), d = (a, b) => Math.hypot(P[a].x - P[b].x, P[a].y - P[b].y);
     const st = hs[h.key] || (hs[h.key] = { pinch: false, sm: null });
     const ratio = d(4, 8) / Math.max(1, d(0, 9));
     st.pinch = st.pinch ? ratio < .45 : ratio < .3;
@@ -366,11 +396,15 @@ function gestures(list) {
     const [a, b] = act;
     const dist = Math.hypot(b.sm.x - a.sm.x, b.sm.y - a.sm.y) || 1;
     const ang = Math.atan2(b.sm.y - a.sm.y, b.sm.x - a.sm.x);
-    const w = toWorld({ x: (a.sm.x + b.sm.x) / 2, y: (a.sm.y + b.sm.y) / 2 });
-    if (!two) two = { d0: dist, a0: ang, s0: sc, y0: spin.rotation.y, w0: w, p0: pivot.position.clone() };
+    const mid = { x: (a.sm.x + b.sm.x) / 2, y: (a.sm.y + b.sm.y) / 2 };
+    if (!two) {
+      const n = camFwd(), p0 = pivot.position.clone();
+      two = { d0: dist, a0: ang, s0: sc, y0: spin.rotation.y, n, p0, w0: planeHit(mid, p0, n) || p0.clone() };
+    }
+    const w = planeHit(mid, two.p0, two.n);
     sc = clamp(two.s0 * dist / two.d0, .25, 1.4);
     spin.rotation.y = two.y0 - wrap(ang - two.a0);
-    pivot.position.set(two.p0.x + w.x - two.w0.x, two.p0.y + w.y - two.w0.y, 0);
+    if (w) pivot.position.copy(two.p0).add(w).sub(two.w0);
     mode = "girar e escalar";
   } else {
     two = null;
@@ -411,15 +445,16 @@ function frame(now = performance.now()) {
   requestAnimationFrame(frame);
   const dt = Math.min(.05, (now - last) / 1000 || 0); last = now;
 
-  const found = tracker.detect(video);
-  if (found) { hands = found; gestures(found); }
-
   const cw = canvas.width, ch = canvas.height;
   const vw = video.videoWidth, vh = video.videoHeight;
   if (!vw || !vh) return;
 
   const s = Math.max(cw / vw, ch / vh);
   lay = { ox: (cw - vw * s) / 2, oy: (ch - vh * s) / 2, s, vw, vh };
+  updateCam(s, vw, vh);
+
+  const found = tracker.detect(video);
+  if (found) { hands = found; gestures(found); }
 
   ctx.fillStyle = "#0b0d10";
   ctx.fillRect(0, 0, cw, ch);
@@ -437,7 +472,10 @@ function frame(now = performance.now()) {
       m.position.y += (TOP + (h ? .6 : 0) - m.position.y) * .3;
     }
     renderer.render(scene, cam);
+    ctx.save();
+    if (camera.mirrored) { ctx.translate(cw, 0); ctx.scale(-1, 1); }
     ctx.drawImage(renderer.domElement, 0, 0, cw, ch);
+    ctx.restore();
   }
 
   const unit = unitPx();
@@ -446,13 +484,13 @@ function frame(now = performance.now()) {
     const st = hs[h.key];
     if (st && st.pinch && st.sm) {
       ctx.strokeStyle = "#fff"; ctx.lineWidth = 3 * unit;
-      ctx.beginPath(); ctx.arc(st.sm.x, st.sm.y, 16 * unit, 0, Math.PI * 2); ctx.stroke();
+      const r = toCam(st.sm); ctx.beginPath(); ctx.arc(r.x, r.y, 16 * unit, 0, Math.PI * 2); ctx.stroke();
     }
   }
 
   if (found) {
     const n = hands.length;
-    statusEl.textContent = (n ? `${n} ${n === 1 ? "mão" : "mãos"}` : "Procurando mãos…") + (mode ? " · " + mode : "");
+    statusEl.textContent = (n ? `${n} ${n === 1 ? "mão" : "mãos"}` : "Procurando mãos…") + (mode ? " · " + mode : "") + (shown && pivot.position.clone().project(cam).z > 1 || shown && Math.abs(pivot.position.clone().project(cam).x) > 1.2 ? " · tabuleiro fora da tela" : "");
   }
 }
 
@@ -480,7 +518,7 @@ async function begin(facing) {
   }
 }
 
-$("go").addEventListener("click", () => { startVoice(); begin("user"); });
+$("go").addEventListener("click", () => { startGyro(); startVoice(); begin("user"); });
 $("flip").addEventListener("click", async () => {
   hands = [];
   for (const k in grabs) drop(k);
